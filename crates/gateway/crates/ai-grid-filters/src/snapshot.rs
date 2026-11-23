@@ -458,7 +458,9 @@ impl RouteSnapshot {
     /// The gauge is the score the order used, NaN when the candidate is excluded or
     /// demoted. A pair in `published` but no longer in the topology is set to NaN,
     /// since the exporter keeps a series until restart. `published` becomes this
-    /// snapshot's pairs.
+    /// snapshot's pairs. A pair or triple past [`MAX_SERIES_KEYS`] still routes but
+    /// publishes nothing, here or when it leaves, and counts in
+    /// `grid_route_series_withheld_total`.
     #[must_use]
     pub(crate) fn published(self, gauged: &mut Gauged) -> Self {
         let Gauged {
@@ -860,7 +862,7 @@ struct Measured {
     relieved: Option<bool>,
 }
 
-/// Per-site learned load state, kept across refreshes.
+/// Per-site learned load state, and the pairs and triples handed a series, kept across refreshes.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Learned {
     /// What each site's own load has taught.
@@ -937,7 +939,8 @@ const RETURN_SAMPLES: u8 = 2;
 /// site's load has taught the gateway.
 #[derive(Debug, Default)]
 pub(crate) struct Gauged {
-    /// `(site, cluster)` pairs with a published score.
+    /// `(site, cluster)` pairs the last snapshot listed. Only those in `learned.series` have a
+    /// score series.
     pub(crate) published: BTreeSet<SitePair>,
     /// `(site, cluster, model)` triples with a published candidate info series.
     pub(crate) named: BTreeSet<SiteModel>,
@@ -1444,7 +1447,7 @@ fn clear_measured(key: &SitePair) {
 
 /// `grid_route_candidate_info`: 1 while the snapshot lists `model` as a candidate at `cluster` on
 /// `site`, 0 once it no longer does. The 0 is a tombstone the exporter keeps until restart, so a
-/// join filters on `== 1`.
+/// join filters on `== 1`; [`Series`] bounds how many triples ever get one.
 fn candidate_info(site: &Arc<str>, cluster: &Arc<str>, model: &Arc<str>, value: f64) {
     metrics::gauge!(
         "grid_route_candidate_info",

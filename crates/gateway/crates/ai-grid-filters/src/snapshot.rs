@@ -133,7 +133,15 @@ impl RouteSnapshot {
             .into_iter()
             .map(|candidate| {
                 let local = *candidate.site == *local_site;
-                Self::resolve(candidate, local, inputs, &mut reset_pairs)
+                let key = (Arc::clone(&candidate.site), Arc::clone(&candidate.cluster));
+                if inputs.learned.series.admit_pair(&key) {
+                    Self::resolve(candidate, local, inputs, &mut reset_pairs)
+                } else {
+                    // Past the cap the pair still routes; only its series are withheld.
+                    metrics::with_local_recorder(&metrics::NoopRecorder, || {
+                        Self::resolve(candidate, local, inputs, &mut reset_pairs)
+                    })
+                }
             })
             .collect();
         weigh_alike(&mut ranked);
@@ -468,25 +476,36 @@ impl RouteSnapshot {
             .collect();
         let mut current = BTreeSet::new();
         let mut naming: BTreeSet<SiteModel> = BTreeSet::new();
+        let mut withheld: u64 = 0;
         for (candidate, score) in self.candidates.iter().zip(&self.scores) {
             let key = (Arc::clone(&candidate.site), Arc::clone(&candidate.cluster));
             // Only inference models name a `model`; a tool with the same name is not one.
             if candidate.kind == CapabilityKind::InferenceModel {
-                naming.insert((Arc::clone(&key.0), Arc::clone(&key.1), Arc::clone(&candidate.name)));
+                let triple = (Arc::clone(&key.0), Arc::clone(&key.1), Arc::clone(&candidate.name));
+                if learned.series.admit_model(&triple) {
+                    naming.insert(triple);
+                } else {
+                    withheld = withheld.saturating_add(1);
+                }
             }
             // The front entry for a pair is its best; later ones are other models.
-            if current.insert(key.clone()) {
-                site_score(&key, *score);
-                let unavailable = unavailable_by_pair.get(&key).copied();
-                publish_score_unavailable(&key, |reason| f64::from(u8::from(unavailable == Some(reason))));
-                site_gauge("grid_route_site_rho", &key, candidate.rho.unwrap_or(f64::NAN));
-                site_gauge("grid_route_site_weight", &key, candidate.capacity.unwrap_or(f64::NAN));
-                // The limits are set where they are learned; an unmeasured site must not keep
-                // showing the last ones it had, or a seed taken during an outage reads them.
-                if candidate.capacity.is_none() {
-                    clear_measured(&key);
-                    site_gauge("grid_route_site_rho_reported", &key, candidate.rho.unwrap_or(f64::NAN));
-                }
+            if !current.insert(key.clone()) {
+                continue;
+            }
+            if !learned.series.admit_pair(&key) {
+                withheld = withheld.saturating_add(1);
+                continue;
+            }
+            site_score(&key, *score);
+            let unavailable = unavailable_by_pair.get(&key).copied();
+            publish_score_unavailable(&key, |reason| f64::from(u8::from(unavailable == Some(reason))));
+            site_gauge("grid_route_site_rho", &key, candidate.rho.unwrap_or(f64::NAN));
+            site_gauge("grid_route_site_weight", &key, candidate.capacity.unwrap_or(f64::NAN));
+            // The limits are set where they are learned; an unmeasured site must not keep
+            // showing the last ones it had, or a seed taken during an outage reads them.
+            if candidate.capacity.is_none() {
+                clear_measured(&key);
+                site_gauge("grid_route_site_rho_reported", &key, candidate.rho.unwrap_or(f64::NAN));
             }
         }
         for (site, cluster, model) in &naming {
@@ -496,15 +515,21 @@ impl RouteSnapshot {
             candidate_info(site, cluster, model, 0.0);
         }
         *named = naming;
+        if withheld > 0 {
+            metrics::counter!("grid_route_series_withheld_total").increment(withheld);
+        }
         for gone in published.difference(&current) {
-            site_score(gone, f64::NAN);
-            publish_score_unavailable(gone, |_| f64::NAN);
-            site_gauge("grid_route_site_silent", gone, f64::NAN);
-            site_gauge("grid_route_site_last_sample_age_seconds", gone, f64::NAN);
-            site_gauge("grid_route_site_round_age_seconds", gone, f64::NAN);
-            site_gauge("grid_route_site_rho", gone, f64::NAN);
-            site_gauge("grid_route_site_weight", gone, f64::NAN);
-            clear_measured(gone);
+            // A pair past the cap never had a series, so leaving must not create one.
+            if learned.series.has_pair(gone) {
+                site_score(gone, f64::NAN);
+                publish_score_unavailable(gone, |_| f64::NAN);
+                site_gauge("grid_route_site_silent", gone, f64::NAN);
+                site_gauge("grid_route_site_last_sample_age_seconds", gone, f64::NAN);
+                site_gauge("grid_route_site_round_age_seconds", gone, f64::NAN);
+                site_gauge("grid_route_site_rho", gone, f64::NAN);
+                site_gauge("grid_route_site_weight", gone, f64::NAN);
+                clear_measured(gone);
+            }
             // Learned bounds outlive their samples, so a pair that leaves must not keep them:
             // a site rebuilt under the same name would resume them untaught.
             learned.load.remove(gone);
@@ -844,6 +869,54 @@ pub(crate) struct Learned {
     silence: BTreeMap<SitePair, Silence>,
     /// The first poller round each remote pair was judged against, for one never heard from.
     judged_since: BTreeMap<SitePair, i64>,
+    /// Every pair and triple handed a series since start.
+    pub(crate) series: Series,
+}
+
+/// Most `(site, cluster)` pairs, and separately most `(site, cluster, model)` triples, the
+/// gateway hands a series before restart: twice the candidates one revision may hold, so a
+/// full candidate set can be replaced once.
+pub(crate) const MAX_SERIES_KEYS: usize = 2 * crate::descriptor::MAX_CANDIDATES;
+
+/// The pairs and triples handed a series. The exporter keeps every series until restart, so
+/// a departed one stays as a tombstone; this set is what bounds them. Past the cap a new pair
+/// or triple still routes but publishes nothing, and `grid_route_series_withheld_total` counts
+/// it.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Series {
+    /// Pairs with per-site gauges.
+    pairs: BTreeSet<SitePair>,
+    /// Triples with a `grid_route_candidate_info` series.
+    models: BTreeSet<SiteModel>,
+}
+
+impl Series {
+    /// Whether `key` may publish, admitting it when there is room.
+    fn admit_pair(&mut self, key: &SitePair) -> bool {
+        admit(&mut self.pairs, key)
+    }
+
+    /// Whether `triple` may publish, admitting it when there is room.
+    fn admit_model(&mut self, triple: &SiteModel) -> bool {
+        admit(&mut self.models, triple)
+    }
+
+    /// Whether `key` was handed per-site gauges.
+    fn has_pair(&self, key: &SitePair) -> bool {
+        self.pairs.contains(key)
+    }
+}
+
+/// Whether `key` is in `admitted`, inserting it while `admitted` is under the cap.
+fn admit<K: Ord + Clone>(admitted: &mut BTreeSet<K>, key: &K) -> bool {
+    if admitted.contains(key) {
+        return true;
+    }
+    if admitted.len() >= MAX_SERIES_KEYS {
+        return false;
+    }
+    admitted.insert(key.clone());
+    true
 }
 
 /// A silent site on its way back: the newest sample seen while silent, and how many new
@@ -2544,6 +2617,180 @@ mod tests {
         fn register_histogram(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Histogram {
             metrics::Histogram::noop()
         }
+    }
+
+    /// Every gauge and counter, keyed `name{label=value,...}` in label order.
+    #[derive(Default)]
+    struct Keyed(std::sync::Mutex<BTreeMap<String, Arc<metrics::atomics::AtomicU64>>>);
+
+    impl Keyed {
+        fn cell(&self, key: &metrics::Key) -> Arc<metrics::atomics::AtomicU64> {
+            let labels: Vec<String> = key
+                .labels()
+                .map(|label| format!("{}={}", label.key(), label.value()))
+                .collect();
+            let name = format!("{}{{{}}}", key.name(), labels.join(","));
+            Arc::clone(self.0.lock().unwrap().entry(name).or_default())
+        }
+
+        fn gauge(&self, name: &str) -> Option<f64> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(name)
+                .map(|value| f64::from_bits(value.load(std::sync::atomic::Ordering::Relaxed)))
+        }
+
+        fn counter(&self, name: &str) -> u64 {
+            self.0
+                .lock()
+                .unwrap()
+                .get(name)
+                .map_or(0, |value| value.load(std::sync::atomic::Ordering::Relaxed))
+        }
+
+        /// The series naming `needle`, other than the per-request decision counters.
+        fn published_for(&self, needle: &str) -> Vec<String> {
+            self.0
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|key| key.contains(needle) && !key.starts_with("grid_route_decisions_total{"))
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl metrics::Recorder for Keyed {
+        fn describe_counter(&self, _: metrics::KeyName, _: Option<metrics::Unit>, _: metrics::SharedString) {}
+
+        fn describe_gauge(&self, _: metrics::KeyName, _: Option<metrics::Unit>, _: metrics::SharedString) {}
+
+        fn describe_histogram(&self, _: metrics::KeyName, _: Option<metrics::Unit>, _: metrics::SharedString) {}
+
+        fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+            metrics::Counter::from_arc(self.cell(key))
+        }
+
+        fn register_gauge(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::from_arc(self.cell(key))
+        }
+
+        fn register_histogram(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
+    /// One revision of `MAX_CANDIDATES` candidates at `site`, each on its own cluster.
+    fn renamed(site: &str, round: usize) -> Vec<RouteCandidate> {
+        validate_candidates(
+            (0..crate::descriptor::MAX_CANDIDATES)
+                .map(|index| {
+                    cand(
+                        &format!("model-{round}-{index}"),
+                        site,
+                        &format!("pool-{round}-{index}"),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_peer_renaming_every_round_stops_growing_the_series_at_the_cap() {
+        let recorder = Keyed::default();
+        metrics::with_local_recorder(&recorder, || {
+            let mut gauged = Gauged::new();
+            let rounds = MAX_SERIES_KEYS / crate::descriptor::MAX_CANDIDATES;
+            for round in 0..rounds {
+                drop(RouteSnapshot::from_static(renamed("east", round), Arc::from("hub")).published(&mut gauged));
+            }
+            assert_eq!(
+                recorder.gauge("grid_route_candidate_info{site=east,cluster=pool-0-0,model=model-0-0}"),
+                Some(0.0),
+                "a departed triple under the cap keeps its tombstone"
+            );
+            assert_eq!(
+                recorder.counter("grid_route_series_withheld_total{}"),
+                0,
+                "nothing past the cap yet"
+            );
+
+            let late = RouteSnapshot::from_static(renamed("east", rounds), Arc::from("hub")).published(&mut gauged);
+            assert_eq!(
+                late.candidates.len(),
+                crate::descriptor::MAX_CANDIDATES,
+                "a candidate past the cap still routes"
+            );
+            let renamed_late = format!("-{rounds}-");
+            assert_eq!(
+                recorder.published_for(&renamed_late),
+                Vec::<String>::new(),
+                "a pair or triple past the cap names no series"
+            );
+            assert_eq!(
+                recorder.counter("grid_route_series_withheld_total{}"),
+                u64::try_from(2 * crate::descriptor::MAX_CANDIDATES).unwrap(),
+                "each withheld pair and triple is counted"
+            );
+
+            drop(RouteSnapshot::from_static(renamed("east", 0), Arc::from("hub")).published(&mut gauged));
+            assert_eq!(
+                recorder.gauge("grid_route_candidate_info{site=east,cluster=pool-0-0,model=model-0-0}"),
+                Some(1.0),
+                "a triple admitted before the cap publishes again when it returns"
+            );
+            assert_eq!(
+                recorder.published_for(&renamed_late),
+                Vec::<String>::new(),
+                "the withheld pairs leaving create no tombstones"
+            );
+        });
+    }
+
+    /// The series `from_store` publishes for one measured candidate at west, given `learned`.
+    fn resolved_series(learned: &mut Learned) -> Vec<String> {
+        let recorder = Keyed::default();
+        metrics::with_local_recorder(&recorder, || {
+            let store = LoadStore::new(Duration::from_secs(60));
+            store.ingest_at(&line("west", "pool-west", 2.0, 1_000), 1_000, 1_000, "local");
+            let candidates = validate_candidates(vec![cand("llama", "west", "pool-west")]).unwrap();
+            let snapshot = RouteSnapshot::from_store(
+                candidates,
+                Arc::from("hub"),
+                &mut Inputs {
+                    signals: &store,
+                    now_ms: 1_000,
+                    window_ms: 60_000,
+                    horizon_ms: 60_000,
+                    availability: &AvailabilitySettings::default(),
+                    learned,
+                },
+            );
+            assert_eq!(snapshot.candidates.len(), 1, "the pair routes either way");
+        });
+        recorder.published_for("pool-west")
+    }
+
+    #[test]
+    fn a_pair_past_the_cap_publishes_none_of_its_measured_gauges() {
+        assert!(
+            !resolved_series(&mut Learned::default()).is_empty(),
+            "under the cap a measured pair publishes its gauges"
+        );
+        let mut full = Learned::default();
+        for index in 0..MAX_SERIES_KEYS {
+            assert!(
+                full.series
+                    .admit_pair(&(Arc::from("east"), Arc::from(format!("pool-{index}"))))
+            );
+        }
+        assert_eq!(
+            resolved_series(&mut full),
+            Vec::<String>::new(),
+            "past the cap it publishes none"
+        );
     }
 
     #[test]

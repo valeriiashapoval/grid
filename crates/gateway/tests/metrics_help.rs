@@ -7,7 +7,7 @@
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     /// Names `describe_metrics` documents, which a scrape must explain.
-    const DOCUMENTED: [&str; 44] = [
+    const DOCUMENTED: [&str; 45] = [
         "grid_route_decisions_total",
         "grid_route_fenced_total",
         "grid_route_selections_total",
@@ -25,6 +25,7 @@ mod tests {
         "grid_dial_refusals_total",
         "grid_dial_server_errors_total",
         "grid_route_site_silent_transitions_total",
+        "grid_route_series_withheld_total",
         "grid_route_site_rho",
         "grid_route_site_rho_reported",
         "grid_route_site_rho_counted",
@@ -90,6 +91,7 @@ mod tests {
             .increment(1);
         metrics::counter!("grid_serving_config_reload_total", "result" => "ok").increment(1);
         metrics::counter!("grid_route_site_silent_transitions_total", "to" => "silent").increment(1);
+        metrics::counter!("grid_route_series_withheld_total").increment(1);
         for name in SITE_GAUGES {
             metrics::gauge!(name, "site" => "east").set(1.0);
         }

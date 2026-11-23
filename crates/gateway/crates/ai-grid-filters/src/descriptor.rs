@@ -19,7 +19,7 @@ use crate::{
 };
 
 /// Maximum number of route candidates.
-const MAX_CANDIDATES: usize = 1024;
+pub(crate) const MAX_CANDIDATES: usize = 1024;
 
 /// Highest accepted operator-assigned selection group.
 ///

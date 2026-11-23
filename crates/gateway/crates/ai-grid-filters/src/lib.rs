@@ -56,7 +56,7 @@ pub use signals::{Over, SiteReading, SiteSignals};
 pub use snapshot::RouteSnapshot;
 
 /// Grid counters the gateway emits, with the help text a scrape shows.
-const COUNTER_HELP: [(&str, &str); 15] = [
+const COUNTER_HELP: [(&str, &str); 16] = [
     (
         "grid_route_decisions_total",
         "Requests the gateway decided, by outcome. A refusal records an empty site and cluster.",
@@ -78,6 +78,10 @@ const COUNTER_HELP: [(&str, &str); 15] = [
         "Prefix keys that left a backend cluster's index, by reason: capacity for a live key a full index displaced, ttl for a confirmed key past its lifetime, pending for an expired key a request still waited on, forgotten for a failed or refused request's.",
     ),
     ("grid_serving_config_reload_total", "Serving-config reloads by result."),
+    (
+        "grid_route_series_withheld_total",
+        "Site pairs and candidate models a snapshot published no series for, because the gateway already holds the most it hands out before restart. They still route. Any increase means dashboards miss them.",
+    ),
     (
         "grid_route_site_silent_transitions_total",
         "Sites entering or leaving silence, by the state entered. A steady rate is a flapping link.",

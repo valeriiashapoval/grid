@@ -606,6 +606,14 @@ patches its reserved volumes, the delegated Praxis config volume source, the
 named container's mounts, and rollout annotations. It preserves other
 Deployment fields and Helm resources.
 
+The opt-in and rollout annotations use the `grid.praxis.fast` domain, the
+same as the CRD group. The operator still reads the earlier
+`grid.praxis-proxy.io` keys as an alias, so a Deployment rendered by an older
+chart keeps its delegation, and its next rollout replaces the operator's own
+`grid.praxis-proxy.io` annotations with `grid.praxis.fast` ones. An operator
+older than v0.4.0 reads only the `grid.praxis-proxy.io` keys, so upgrade the
+operator before this chart.
+
 The operator's own charts grant no unrestricted Deployment access; certificate
 rotation retains a grant on the named gateway Deployment. With
 `mountReconciliation.enabled`, this chart renders a Role and RoleBinding in

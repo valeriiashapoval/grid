@@ -24,4 +24,7 @@ pub const CANDIDATE_EXPIRY_SKEW_MARGIN_MS: u64 = 30_000;
 
 mod signals;
 
-pub use signals::{Combine, CombinePolicy, Ingested, LearningState, LoadStore, Sample, Timeline, now_ms};
+pub use signals::{
+    Combine, CombinePolicy, Ingested, LearningState, LoadStore, MAX_RELAY_AGE_MS, RELAY_AGE_TOLERANCE_MS, Sample,
+    Timeline, now_ms,
+};

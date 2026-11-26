@@ -2449,20 +2449,12 @@ fn complete_batch(group: &[&Observation], metadata: &Observation) -> bool {
             .all(|sample| sample.timestamp_ms == metadata.timestamp_ms && sample.age == metadata.age)
 }
 
-/// How far a relayed sample may be stamped past its peer's `Date` and still count
-/// as now. A peer writes its `Date` from the same clock reading as its stamps, at
-/// one-second resolution, so a fresh sample lands up to 999 ms ahead.
-const RELAY_AGE_TOLERANCE_MS: i64 = 1_000; // the Date header's resolution
-
-/// The largest relayed-sample age accepted.
-///
-/// Older, or further ahead of the peer's `Date` than [`RELAY_AGE_TOLERANCE_MS`],
-/// means the peer's clock stepped or the stamp is garbage, so the row is dropped
-/// rather than refreshed into a value that reads as current.
-///
-/// The gateway's `grid-signals` holds its own copy of both bounds, and a test
-/// fails when the two differ.
-const MAX_RELAY_AGE_MS: i64 = 86_400_000; // one day
+// The relayed-sample age bounds, `RELAY_AGE_TOLERANCE_MS` and `MAX_RELAY_AGE_MS`,
+// are `grid-signals`' own, so this hop and the gateway's keep and drop the same ages.
+// Older than the one, or further ahead of the peer's `Date` than the other, means the
+// peer's clock stepped or the stamp is garbage, so the row is dropped rather than
+// refreshed into a value that reads as current.
+use grid_signals::{MAX_RELAY_AGE_MS, RELAY_AGE_TOLERANCE_MS};
 
 /// Carry each relayed peer sample's age into [`Observation::age`], dropping and
 /// counting as `skew` each row whose age is implausible. Returns the rows kept and
@@ -3367,26 +3359,6 @@ mod tests {
             (kept.first().map(|o| o.age), rejected),
             (Some(Duration::ZERO), 0),
             "without a Date there is no age to carry, and nothing to reject"
-        );
-    }
-
-    /// The gateway's signals crate, which applies the same relay-age bounds on the next hop.
-    const GATEWAY_SIGNALS: &str = include_str!("../../signals/src/signals.rs");
-
-    #[test]
-    fn the_relay_age_bounds_match_the_gateways() {
-        let declared = |name: &str| -> Option<i64> {
-            let declaration = format!("const {name}: i64 = ");
-            GATEWAY_SIGNALS
-                .lines()
-                .find_map(|line| line.split_once(declaration.as_str()))
-                .and_then(|(_, value)| value.split(';').next())
-                .and_then(|value| value.replace('_', "").parse().ok())
-        };
-        assert_eq!(
-            (declared("RELAY_AGE_TOLERANCE_MS"), declared("MAX_RELAY_AGE_MS")),
-            (Some(RELAY_AGE_TOLERANCE_MS), Some(MAX_RELAY_AGE_MS)),
-            "both hops keep and drop the same relayed ages"
         );
     }
 

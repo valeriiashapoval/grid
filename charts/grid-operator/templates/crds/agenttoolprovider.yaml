@@ -294,6 +294,49 @@ spec:
                 [`InferenceProvider`]: crate::crd::inference_provider::InferenceProvider
               nullable: true
               properties:
+                conditions:
+                  description: |-
+                    Observed conditions. `ToolsCut` says whether the routing cap of 128 tools
+                    per provider leaves some of the routable tools out.
+                  items:
+                    description: One observed condition, shaped like `metav1.Condition`.
+                    properties:
+                      lastTransitionTime:
+                        description: When `status` last changed, RFC 3339.
+                        format: date-time
+                        type: string
+                      message:
+                        default: ""
+                        description: Human-readable detail.
+                        type: string
+                      observedGeneration:
+                        description: The `metadata.generation` this was computed against.
+                        format: int64
+                        nullable: true
+                        type: integer
+                      reason:
+                        description: CamelCase reason for the status.
+                        type: string
+                      status:
+                        description: '`True`, `False`, or `Unknown`.'
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                        type: string
+                      type:
+                        description: Condition type, such as `Ready`.
+                        type: string
+                    required:
+                      - lastTransitionTime
+                      - reason
+                      - status
+                      - type
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                    - type
+                  x-kubernetes-list-type: map
                 discoveredTools:
                   default: []
                   description: Tools discovered via MCP `tools/list`.

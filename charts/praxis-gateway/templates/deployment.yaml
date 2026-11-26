@@ -19,11 +19,11 @@ metadata:
     argocd.argoproj.io/sync-wave: "2"
     {{- end }}
     {{- if .Values.mountReconciliation.enabled }}
-    grid.praxis-proxy.io/mount-reconciliation: "enabled"
-    grid.praxis-proxy.io/network: {{ .Values.mountReconciliation.network | quote }}
-    grid.praxis-proxy.io/gateway: {{ (.Values.mountReconciliation.gatewayRef | default (include "praxis-gateway.fullname" .)) | quote }}
+    grid.praxis.fast/mount-reconciliation: "enabled"
+    grid.praxis.fast/network: {{ .Values.mountReconciliation.network | quote }}
+    grid.praxis.fast/gateway: {{ (.Values.mountReconciliation.gatewayRef | default (include "praxis-gateway.fullname" .)) | quote }}
     {{- if $gridServing.enabled }}
-    grid.praxis-proxy.io/grid-serving-tls: "chart-managed"
+    grid.praxis.fast/grid-serving-tls: "chart-managed"
     {{- end }}
     {{- end }}
   {{- end }}

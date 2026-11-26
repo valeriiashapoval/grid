@@ -8,8 +8,18 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     auth::{AccessPolicy, AuthConfig, SelectorConfig},
-    inference_provider::{EndpointTlsConfig, ProviderPhase},
+    inference_provider::{Condition, EndpointTlsConfig, ProviderPhase},
 };
+
+/// Condition type: `True` while routing leaves some of the provider's tools out.
+///
+/// Routing keeps at most 128 tools per provider, the routing overlay's
+/// `MAX_TOOLS_PER_PROVIDER`, while `status.discoveredTools` lists more. `False`
+/// with reason `AsExpected` while every routable tool fits.
+pub const TOOLS_CUT: &str = "ToolsCut";
+
+/// [`TOOLS_CUT`] reason while the routing cap leaves tools out.
+pub const TOOL_CAP_EXCEEDED: &str = "ToolCapExceeded";
 
 // ---------------------------------------------------------------------------
 // Spec
@@ -107,6 +117,12 @@ pub struct ToolInfo {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentToolProviderStatus {
+    /// Observed conditions. `ToolsCut` says whether the routing cap of 128 tools
+    /// per provider leaves some of the routable tools out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend("x-kubernetes-list-type" = "map", "x-kubernetes-list-map-keys" = ["type"]))]
+    pub conditions: Vec<Condition>,
+
     /// Tools discovered via MCP `tools/list`.
     #[serde(default)]
     pub discovered_tools: Vec<String>,

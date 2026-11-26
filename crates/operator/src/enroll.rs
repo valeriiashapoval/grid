@@ -1037,6 +1037,13 @@ async fn keep_existing_ca<S: Store + Sync>(
     }
 }
 
+/// How often the operator reads the identity Secret while it waits on it.
+///
+/// One value for both waits: a site without an identity checks for one this often, and
+/// a renewal loop reads the Secret's version this often, so a write by any manager,
+/// cert-manager among them, is seen within this rather than at the next due time.
+pub const IDENTITY_POLL: Duration = Duration::from_secs(15);
+
 /// How often a running site checks whether it lost its identity.
 pub(crate) const LOST_IDENTITY_CHECK: Duration = Duration::from_secs(30);
 

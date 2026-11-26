@@ -17,13 +17,13 @@ use serde::Deserialize;
 use tokio::sync::watch;
 
 /// Default poll interval.
-const DEFAULT_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_INTERVAL_MS: u64 = crate::GATEWAY_POLL_INTERVAL_MS;
 /// Default retention per series.
 const DEFAULT_WINDOW_SECS: u64 = 30;
 /// Default liveness bound on a sample.
 const DEFAULT_MAX_AGE_MS: i64 = 5_000;
 /// Default per-request timeout.
-const DEFAULT_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_TIMEOUT_MS: u64 = crate::GATEWAY_POLL_TIMEOUT_MS;
 
 /// Everything escaped except the RFC 3986 unreserved set.
 const QUERY_VALUE: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');

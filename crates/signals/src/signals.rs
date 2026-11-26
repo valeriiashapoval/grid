@@ -55,13 +55,16 @@ const MAX_KEY_INPUT_BYTES: usize = 256;
 /// How far a sample may be stamped past the operator's `Date` and still read as
 /// now. The `Date` has one-second resolution and the operator writes it from the
 /// same clock reading as its stamps, so a fresh sample lands up to 999 ms ahead.
-const RELAY_AGE_TOLERANCE_MS: i64 = 1_000; // the Date header's resolution
+pub const RELAY_AGE_TOLERANCE_MS: i64 = 1_000; // the Date header's resolution
 
 /// Largest relayed-sample age accepted. Further ahead of the `Date` than
 /// [`RELAY_AGE_TOLERANCE_MS`], or older than this, means the publisher's clock
 /// stepped or the stamp is garbage, so the line is dropped as `skew` rather than
 /// trusted, or refreshed into a value that reads as current.
-const MAX_RELAY_AGE_MS: i64 = 86_400_000; // one day
+///
+/// The operator applies both bounds on the hop before this one and reads them
+/// from here, so the two hops keep and drop the same ages.
+pub const MAX_RELAY_AGE_MS: i64 = 86_400_000; // one day
 
 /// Two published stamps this close name one observation. A relay re-serves a sample
 /// for a whole poll cycle and a one-second `Date` restamps it on a moving clock each

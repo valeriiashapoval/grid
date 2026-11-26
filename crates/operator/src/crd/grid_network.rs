@@ -1243,9 +1243,10 @@ pub struct ConsumerConfig {
     /// into a specifically delegated gateway Deployment.
     ///
     /// Disabled by default. When enabled, the named Deployment must carry the
-    /// `grid.praxis-proxy.io/mount-reconciliation`, `.../network`, and
+    /// `grid.praxis.fast/mount-reconciliation`, `.../network`, and
     /// `.../gateway` annotations emitted by `charts/praxis-gateway` (or set
-    /// them explicitly on an externally managed Deployment).
+    /// them explicitly on an externally managed Deployment). The earlier
+    /// `grid.praxis-proxy.io` keys are still read as an alias.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount_reconciliation: Option<MountReconciliation>,
 

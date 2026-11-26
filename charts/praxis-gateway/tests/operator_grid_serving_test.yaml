@@ -46,7 +46,7 @@ tests:
             mountPath: /etc/praxis/tls
             readOnly: true
       - equal:
-          path: metadata.annotations["grid.praxis-proxy.io/grid-serving-tls"]
+          path: metadata.annotations["grid.praxis.fast/grid-serving-tls"]
           value: chart-managed
 
   - it: refuses a /ready probe, since praxis /ready fails while any health-checked site is down
@@ -109,7 +109,7 @@ tests:
             name: grid-serving
           any: true
       - notExists:
-          path: metadata.annotations["grid.praxis-proxy.io/grid-serving-tls"]
+          path: metadata.annotations["grid.praxis.fast/grid-serving-tls"]
 
   - it: still refuses render gridServing under the operator source
     set:

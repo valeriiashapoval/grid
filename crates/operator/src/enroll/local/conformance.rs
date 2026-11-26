@@ -378,7 +378,7 @@ async fn renewal_rounds_under(api: &FakeApi, rest: &str, count: usize, mut befor
 
 #[tokio::test(start_paused = true)]
 async fn a_write_to_the_identity_secret_wakes_a_renewal_loop_with_no_signer() {
-    use crate::enroll::renew::IDENTITY_POLL;
+    use crate::enroll::IDENTITY_POLL;
     let api = seeded();
     store_identity(&api);
     let client = api.client(NAMESPACE);

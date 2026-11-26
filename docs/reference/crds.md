@@ -1603,7 +1603,15 @@ fails outright (`Unavailable`), mirroring `phase_and_reason_from_probe`'s and
 **Status fields**: `discoveredTools` (auto-populated
 from MCP `tools/list`; a failed probe preserves the previous list rather than
 clearing it), `matchingSites`, `reason` (machine-readable; see reason codes
-below), `observedGeneration`
+below), `observedGeneration`, `conditions`
+
+**Conditions**: `ToolsCut` reads `True` with reason `ToolCapExceeded` while
+routing leaves some of the provider's routable tools out. Routing keeps 128
+tools per provider, while `discoveredTools` lists up to 500, so the
+`spec.tools` allowlist can pick from the whole catalog. The message names how
+many tools are routable and how many are left out, and
+`grid_agent_tool_provider_tools_cut` counts the same number. It reads `False`
+with reason `AsExpected` while every routable tool fits.
 
 #### AgentToolProvider reason codes
 

@@ -441,6 +441,12 @@ func (in *AgentToolProviderSpec) DeepCopy() *AgentToolProviderSpec {
 
 func (in *AgentToolProviderStatus) DeepCopyInto(out *AgentToolProviderStatus) {
 	*out = *in
+	if in.Conditions != nil {
+		out.Conditions = make([]metav1.Condition, len(in.Conditions))
+		for i := range in.Conditions {
+			in.Conditions[i].DeepCopyInto(&out.Conditions[i])
+		}
+	}
 	if in.DiscoveredTools != nil {
 		out.DiscoveredTools = make([]string, len(in.DiscoveredTools))
 		copy(out.DiscoveredTools, in.DiscoveredTools)

@@ -4,7 +4,8 @@
 //! resolves the referenced [`GridNetwork`], resolves matching [`GridSite`]s
 //! via the site selector, live-probes the endpoint's MCP `tools/list`
 //! contract, and sets `status.phase`, `status.matchingSites`,
-//! `status.discoveredTools`, `status.reason`, and `status.observedGeneration`.
+//! `status.discoveredTools`, `status.reason`, `status.observedGeneration`, and
+//! the `ToolsCut` condition.
 //!
 //! Structured exactly like [`inference_provider`](crate::controller::inference_provider):
 //! static validation short-circuits first, then `GridNetwork`/site
@@ -32,16 +33,18 @@ use tracing::info;
 
 use crate::{
     crd::{
-        agent_tool_provider::{AgentToolProvider, AgentToolProviderStatus},
+        agent_tool_provider::{AgentToolProvider, AgentToolProviderStatus, TOOL_CAP_EXCEEDED, TOOLS_CUT},
         grid_network::GridNetwork,
         grid_site::GridSite,
-        inference_provider::ProviderPhase,
+        inference_provider::{Condition, ConditionStatus, ProviderPhase},
     },
     error::OperatorError,
     resources::{
         credentials::{self, CredentialPlan, CredentialResolver as _, KubernetesSecretResolver},
         mcp_probe,
+        routing_overlay::MAX_TOOLS_PER_PROVIDER,
     },
+    rollup,
 };
 
 // ---------------------------------------------------------------------------
@@ -422,13 +425,17 @@ async fn update_status(
     let reason_changed = existing.map(|s| &s.reason) != Some(&reason);
 
     let api: Api<AgentToolProvider> = Api::all(client.clone());
-    let status = AgentToolProviderStatus {
+    let mut status = AgentToolProviderStatus {
+        conditions: Vec::new(),
         discovered_tools,
         matching_sites,
         observed_generation,
         phase,
         reason,
     };
+    if let Ok(now) = time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339) {
+        status.conditions = vec![tools_cut_condition(provider, &status, &now)];
+    }
 
     if !agent_tool_provider_status_needs_update(existing, &status) {
         return Ok(());
@@ -547,11 +554,46 @@ fn is_real_transition(phase_changed: bool, reason_changed: bool) -> bool {
     phase_changed || reason_changed
 }
 
+/// The [`TOOLS_CUT`] condition `status` would give `provider`.
+///
+/// Counts what routing would keep from `status`, the status about to be written,
+/// rather than the one `provider` holds, and keeps the `lastTransitionTime` the held
+/// condition carries while its status is unchanged.
+fn tools_cut_condition(provider: &AgentToolProvider, status: &AgentToolProviderStatus, now: &str) -> Condition {
+    let mut desired = provider.clone();
+    desired.status = Some(status.clone());
+    let (routable, cut) = crate::controller::grid_network::routable_tools_and_cut(&desired);
+    let verdict = if cut > 0 {
+        (
+            ConditionStatus::True,
+            TOOL_CAP_EXCEEDED,
+            format!(
+                "routing keeps {MAX_TOOLS_PER_PROVIDER} of {routable} routable tools and leaves {cut} out; narrow spec.tools to choose which are routed"
+            ),
+        )
+    } else {
+        (ConditionStatus::False, rollup::AS_EXPECTED, String::new())
+    };
+    let held = provider
+        .status
+        .as_ref()
+        .map_or(&[][..], |held| held.conditions.as_slice());
+    rollup::condition(
+        held,
+        TOOLS_CUT,
+        verdict,
+        rollup::Stamp {
+            generation: provider.metadata.generation,
+            now,
+        },
+    )
+}
+
 /// Return whether the status subresource differs from the desired status.
 ///
 /// Business rule: the status subresource is only patched when `phase`,
-/// `reason`, `matchingSites`, or `discoveredTools` materially changed,
-/// never on a no-op reconcile.
+/// `reason`, `matchingSites`, `discoveredTools`, or a condition materially
+/// changed, never on a no-op reconcile.
 fn agent_tool_provider_status_needs_update(
     current: Option<&AgentToolProviderStatus>,
     desired: &AgentToolProviderStatus,
@@ -912,6 +954,7 @@ mod tests {
 
     fn baseline_status() -> AgentToolProviderStatus {
         AgentToolProviderStatus {
+            conditions: Vec::new(),
             discovered_tools: vec!["search".to_owned()],
             matching_sites: vec!["site-a".to_owned()],
             observed_generation: 2,
@@ -1266,5 +1309,117 @@ mod tests {
             "the GridNetwork-lookup failure reason must reach the persisted status, proving reconcile actually \
              performed the live GET rather than short-circuiting on static config alone"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // tools_cut_condition: the routing cap reported on status
+    // -----------------------------------------------------------------------
+
+    const NOW: &str = "2026-11-26T10:00:00Z";
+    const EARLIER: &str = "2026-11-25T10:00:00Z";
+
+    fn tools(count: usize) -> Vec<String> {
+        (0..count).map(|n| format!("tool-{n:03}")).collect()
+    }
+
+    fn generation_two_provider() -> AgentToolProvider {
+        let mut provider = test_provider("http://tools:8080", "production");
+        provider.metadata.generation = Some(2);
+        provider
+    }
+
+    fn available(discovered_tools: Vec<String>) -> AgentToolProviderStatus {
+        AgentToolProviderStatus {
+            discovered_tools,
+            ..baseline_status()
+        }
+    }
+
+    #[test]
+    fn the_documented_routing_cap_is_the_one_routing_applies() {
+        assert_eq!(
+            MAX_TOOLS_PER_PROVIDER, 128,
+            "the ToolsCut CRD description and docs/reference/crds.md name 128"
+        );
+    }
+
+    #[test]
+    fn tools_past_the_routing_cap_set_tools_cut() {
+        let provider = generation_two_provider();
+        let condition = tools_cut_condition(&provider, &available(tools(MAX_TOOLS_PER_PROVIDER + 3)), NOW);
+        assert_eq!(condition.type_, TOOLS_CUT);
+        assert_eq!(condition.status, ConditionStatus::True);
+        assert_eq!(condition.reason, TOOL_CAP_EXCEEDED);
+        assert!(
+            condition.message.contains(&format!(
+                "keeps {MAX_TOOLS_PER_PROVIDER} of {} routable tools and leaves 3 out",
+                MAX_TOOLS_PER_PROVIDER + 3
+            )),
+            "the message names the cut: {}",
+            condition.message
+        );
+        assert_eq!(condition.observed_generation, Some(2));
+        assert_eq!(condition.last_transition_time, NOW);
+    }
+
+    #[test]
+    fn tools_within_the_routing_cap_read_as_expected() {
+        let provider = generation_two_provider();
+        for status in [
+            available(tools(MAX_TOOLS_PER_PROVIDER)),
+            available(Vec::new()),
+            AgentToolProviderStatus {
+                phase: ProviderPhase::Unavailable,
+                ..available(tools(MAX_TOOLS_PER_PROVIDER + 3))
+            },
+        ] {
+            let condition = tools_cut_condition(&provider, &status, NOW);
+            assert_eq!(
+                (condition.status, condition.reason.as_str()),
+                (ConditionStatus::False, rollup::AS_EXPECTED),
+                "{} tools in phase {:?} route without a cut",
+                status.discovered_tools.len(),
+                status.phase
+            );
+        }
+    }
+
+    #[test]
+    fn a_spec_tools_allowlist_under_the_cap_clears_tools_cut() {
+        let mut provider = generation_two_provider();
+        provider.spec.tools = tools(10)
+            .into_iter()
+            .map(|name| crate::crd::agent_tool_provider::ToolInfo {
+                name,
+                description: None,
+            })
+            .collect();
+        let condition = tools_cut_condition(&provider, &available(tools(MAX_TOOLS_PER_PROVIDER + 50)), NOW);
+        assert_eq!(
+            condition.status,
+            ConditionStatus::False,
+            "the cap counts the allowlisted tools, not the whole catalog"
+        );
+    }
+
+    #[test]
+    fn tools_cut_keeps_its_transition_time_until_it_flips() {
+        let mut provider = generation_two_provider();
+        let over = available(tools(MAX_TOOLS_PER_PROVIDER + 1));
+        let mut held = tools_cut_condition(&provider, &over, EARLIER);
+        provider.status = Some(AgentToolProviderStatus {
+            conditions: vec![held.clone()],
+            ..over.clone()
+        });
+        let again = tools_cut_condition(&provider, &over, NOW);
+        assert_eq!(
+            again.last_transition_time, EARLIER,
+            "an unchanged status keeps its time"
+        );
+        held.last_transition_time = EARLIER.to_owned();
+        assert_eq!(again, held, "an unchanged cut needs no status patch");
+        let cleared = tools_cut_condition(&provider, &available(tools(1)), NOW);
+        assert_eq!(cleared.status, ConditionStatus::False);
+        assert_eq!(cleared.last_transition_time, NOW, "a flip takes the new time");
     }
 }

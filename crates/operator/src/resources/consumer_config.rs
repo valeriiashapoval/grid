@@ -1144,8 +1144,8 @@ pub(crate) fn build_mount_requirements_config_map(
     data.insert("mount-requirements.json".to_owned(), encoded);
     let mut labels = BTreeMap::new();
     labels.insert("app.kubernetes.io/managed-by".to_owned(), "grid-operator".to_owned());
-    labels.insert("grid.praxis-proxy.io/gateway".to_owned(), gateway_name.to_owned());
-    labels.insert("grid.praxis-proxy.io/network".to_owned(), network_name.to_owned());
+    labels.insert("grid.praxis.fast/gateway".to_owned(), gateway_name.to_owned());
+    labels.insert("grid.praxis.fast/network".to_owned(), network_name.to_owned());
     Ok(ConfigMap {
         metadata: kube::api::ObjectMeta {
             labels: Some(labels),

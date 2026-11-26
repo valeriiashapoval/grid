@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use super::{
-    Issued, Signer, SignerError, Target, jittered,
+    IDENTITY_POLL, Issued, Signer, SignerError, Target, jittered,
     local::{self, Verdict},
     signer::{Clients, HttpsSigner, LeafError, SignerUrl, issued_leaf},
 };
@@ -36,10 +36,6 @@ use crate::{
 
 /// Longest wait between checks, so an identity replaced out of band is still watched.
 const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
-
-/// How often a waiting loop reads the identity Secret's version, so a write by any manager,
-/// cert-manager among them, is checked within this rather than at the next due time.
-pub(crate) const IDENTITY_POLL: Duration = Duration::from_secs(30);
 
 /// First retry after a failed renewal, doubling to [`RETRY_MAX`].
 const RETRY_INITIAL: Duration = Duration::from_secs(60);

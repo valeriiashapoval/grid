@@ -1721,9 +1721,6 @@ impl SiteStartup {
     }
 }
 
-/// How often a site without an identity checks for one.
-const IDENTITY_POLL: std::time::Duration = std::time::Duration::from_secs(15);
-
 /// Resolve once the site identity appears, enrolling the site meanwhile, at once on an edit to
 /// the operator config, and warning once per distinct error.
 async fn identity_appears(
@@ -1735,7 +1732,7 @@ async fn identity_appears(
     let mut last_error = None;
     loop {
         tokio::select! {
-            () = tokio::time::sleep(IDENTITY_POLL) => {},
+            () = tokio::time::sleep(operator::enroll::IDENTITY_POLL) => {},
             () = operator_config.changed() => {},
         }
         let read = operator_config.current();

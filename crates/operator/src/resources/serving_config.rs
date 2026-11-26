@@ -37,14 +37,13 @@ pub(crate) const MIN_WRITE_INTERVAL: Duration = Duration::from_secs(30);
 /// Store retention per series, seconds.
 const WINDOW_SECS: u64 = 60;
 
-/// How often the gateway polls its local operator, milliseconds.
-///
-/// In-cluster and unicast, so it is paced by how current the router needs its load to be
-/// rather than by what it costs.
-const GATEWAY_POLL_MS: u64 = 1_000;
+/// How often the gateway polls its local operator, milliseconds: `grid-client`'s own
+/// poller default, so the rendered config and the gateway agree.
+const GATEWAY_POLL_MS: u64 = grid_client::GATEWAY_POLL_INTERVAL_MS;
 
-/// Gateway connect and request timeout to its local operator, milliseconds.
-const GATEWAY_TIMEOUT_MS: u64 = 2_000;
+/// Gateway connect and request timeout to its local operator, milliseconds, from the
+/// same place.
+const GATEWAY_TIMEOUT_MS: u64 = grid_client::GATEWAY_POLL_TIMEOUT_MS;
 
 /// Margin past the producers: `Date` is truncated to the second, which under-reads age,
 /// and the gateway's fetch runs on past the `Date` it reads.
@@ -1341,7 +1340,15 @@ mod tests {
         );
         let peer = config.peers.first().expect("peer");
         assert_eq!(peer.server_name, format!("site-a.{}", certs::SPIFFE_TRUST_DOMAIN));
-        assert_eq!(peer.interval_ms, GATEWAY_POLL_MS);
+        assert_eq!(
+            (peer.interval_ms, peer.connect_timeout_ms, peer.request_timeout_ms),
+            (
+                grid_client::GATEWAY_POLL_INTERVAL_MS,
+                grid_client::GATEWAY_POLL_TIMEOUT_MS,
+                grid_client::GATEWAY_POLL_TIMEOUT_MS
+            ),
+            "the rendered poll matches the gateway poller's own defaults"
+        );
         let without = ServingInputs {
             local_signals_addr: None,
             ..INPUTS

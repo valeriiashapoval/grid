@@ -4663,28 +4663,68 @@ struct ConsumerApplyOutcome {
     mount_status: Option<MountReconciliationStatus>,
 }
 
+/// Annotation domain the operator writes, the same as the CRD group.
+const ANNOTATION_DOMAIN: &str = "grid.praxis.fast/";
+/// Earlier annotation domain, read as an alias of [`ANNOTATION_DOMAIN`] and never written.
+const LEGACY_ANNOTATION_DOMAIN: &str = "grid.praxis-proxy.io/";
 /// Explicit opt-in annotation required on a delegated Deployment.
-const MOUNT_OPT_IN_ANNOTATION: &str = "grid.praxis-proxy.io/mount-reconciliation";
+const MOUNT_OPT_IN_ANNOTATION: &str = "grid.praxis.fast/mount-reconciliation";
 /// `GridNetwork` identity annotation required on a delegated Deployment.
-const MOUNT_NETWORK_ANNOTATION: &str = "grid.praxis-proxy.io/network";
+const MOUNT_NETWORK_ANNOTATION: &str = "grid.praxis.fast/network";
 /// `GatewayRef` identity annotation required on a delegated Deployment.
-const MOUNT_GATEWAY_ANNOTATION: &str = "grid.praxis-proxy.io/gateway";
+const MOUNT_GATEWAY_ANNOTATION: &str = "grid.praxis.fast/gateway";
 /// Chart marker for the Grid-serving TLS projection that remains Helm-owned.
-const GRID_SERVING_TLS_ANNOTATION: &str = "grid.praxis-proxy.io/grid-serving-tls";
+const GRID_SERVING_TLS_ANNOTATION: &str = "grid.praxis.fast/grid-serving-tls";
 /// Fixed path read by the Grid-serving peer pollers.
 const GRID_SERVING_TLS_MOUNT_PATH: &str = "/etc/praxis/tls";
 /// Annotation recording the volume names currently owned by Grid.
-const OWNED_MOUNTS_ANNOTATION: &str = "grid.praxis-proxy.io/owned-mounts";
+const OWNED_MOUNTS_ANNOTATION: &str = "grid.praxis.fast/owned-mounts";
 /// Pod-template annotation recording the desired mount-requirement revision.
-const MOUNT_REVISION_ANNOTATION: &str = "grid.praxis-proxy.io/mount-revision";
+const MOUNT_REVISION_ANNOTATION: &str = "grid.praxis.fast/mount-revision";
 /// Pod-template annotation recording the rendered Praxis config revision.
-const CONFIG_REVISION_ANNOTATION: &str = "grid.praxis-proxy.io/config-revision";
+const CONFIG_REVISION_ANNOTATION: &str = "grid.praxis.fast/config-revision";
 /// Pod-template annotation recording the hashed Secret revision.
-const SECRET_REVISION_ANNOTATION: &str = "grid.praxis-proxy.io/secret-revision";
+const SECRET_REVISION_ANNOTATION: &str = "grid.praxis.fast/secret-revision";
 /// Deployment annotation recording Secret resource versions, without Secret data.
-const SECRET_RESOURCE_VERSIONS_ANNOTATION: &str = "grid.praxis-proxy.io/secret-resource-versions";
+const SECRET_RESOURCE_VERSIONS_ANNOTATION: &str = "grid.praxis.fast/secret-resource-versions";
 /// Reserved prefix for projected volume names owned by Grid.
 const GRID_MOUNT_PREFIX: &str = "grid-mount-";
+
+/// The [`LEGACY_ANNOTATION_DOMAIN`] alias of a Grid annotation key.
+fn legacy_annotation_key(key: &str) -> Option<String> {
+    key.strip_prefix(ANNOTATION_DOMAIN)
+        .map(|name| format!("{LEGACY_ANNOTATION_DOMAIN}{name}"))
+}
+
+/// Read a Grid annotation, falling back to its [`LEGACY_ANNOTATION_DOMAIN`] alias.
+///
+/// The `grid.praxis.fast` key wins when both are present.
+fn grid_annotation<'annotations>(
+    annotations: &'annotations BTreeMap<String, String>,
+    key: &str,
+) -> Option<&'annotations String> {
+    annotations
+        .get(key)
+        .or_else(|| annotations.get(&legacy_annotation_key(key)?))
+}
+
+/// Add a null for the legacy alias of each Grid annotation in a patch.
+///
+/// A strategic merge patch that writes a `grid.praxis.fast` annotation then
+/// also drops the `grid.praxis-proxy.io` key the operator wrote before, so the
+/// object keeps one copy of the state.
+fn drop_legacy_annotation_aliases(annotations: &Value) -> Value {
+    let Some(entries) = annotations.as_object() else {
+        return annotations.clone();
+    };
+    let mut patched = entries.clone();
+    for key in entries.keys() {
+        if let Some(legacy) = legacy_annotation_key(key) {
+            patched.entry(legacy).or_insert(Value::Null);
+        }
+    }
+    Value::Object(patched)
+}
 
 /// The 503 config a delegated gateway's first pod starts on.
 fn bootstrap_config_map(name: &str, cc: &ConsumerConfig, network_name: &str, gw_ref: &GatewayRef) -> ConfigMap {
@@ -5245,9 +5285,9 @@ fn staged_config_mount_patch(
         );
     }
     json!({
-        "metadata": {"annotations": deployment_annotations},
+        "metadata": {"annotations": drop_legacy_annotation_aliases(deployment_annotations)},
         "spec": {"template": {
-            "metadata": {"annotations": template_annotations},
+            "metadata": {"annotations": drop_legacy_annotation_aliases(template_annotations)},
             "spec": pod_spec_patch
         }}
     })
@@ -5431,8 +5471,7 @@ async fn reconcile_delegated_gateway(
         .and_then(|metadata| metadata.annotations.as_ref())
         .cloned()
         .unwrap_or_default();
-    let has_mount_revision = template_annotations
-        .get(MOUNT_REVISION_ANNOTATION)
+    let has_mount_revision = grid_annotation(&template_annotations, MOUNT_REVISION_ANNOTATION)
         .is_some_and(|revision| revision == &requirements_revision);
     let config_revision = gateway_mounts::config_revision(&rendered.config_yaml);
     let resource_versions_json = serde_json::to_string(&resource_versions)?;
@@ -5441,7 +5480,7 @@ async fn reconcile_delegated_gateway(
         .metadata
         .annotations
         .as_ref()
-        .and_then(|annotations| annotations.get(OWNED_MOUNTS_ANNOTATION));
+        .and_then(|annotations| grid_annotation(annotations, OWNED_MOUNTS_ANNOTATION));
     let active_cm = consumer_config::build_consumer_config_map(
         &rendered.config_yaml,
         active_config_name,
@@ -5451,7 +5490,7 @@ async fn reconcile_delegated_gateway(
     );
     let config_api: Api<ConfigMap> = Api::namespaced(client.clone(), &gw_ref.namespace);
     let active = config_api.get_opt(active_config_name).await?;
-    if active.is_none() && !template_annotations.contains_key(CONFIG_REVISION_ANNOTATION) {
+    if active.is_none() && grid_annotation(&template_annotations, CONFIG_REVISION_ANNOTATION).is_none() {
         // Never staged, so no pod serves a config yet, and the first cannot start, nor the
         // rollout finish, without one.
         create_bootstrap_config(&config_api, active_config_name, cc, network_name, gw_ref).await?;
@@ -5461,13 +5500,13 @@ async fn reconcile_delegated_gateway(
         || !mount_additions.is_empty()
         || !has_mount_revision
         || current_owned_mounts_json != Some(&owned_mounts_json)
-        || template_annotations.get(CONFIG_REVISION_ANNOTATION) != Some(&config_revision)
-        || template_annotations.get(SECRET_REVISION_ANNOTATION) != Some(&secret_revision)
+        || grid_annotation(&template_annotations, CONFIG_REVISION_ANNOTATION) != Some(&config_revision)
+        || grid_annotation(&template_annotations, SECRET_REVISION_ANNOTATION) != Some(&secret_revision)
         || deployment
             .metadata
             .annotations
             .as_ref()
-            .and_then(|values| values.get(SECRET_RESOURCE_VERSIONS_ANNOTATION))
+            .and_then(|values| grid_annotation(values, SECRET_RESOURCE_VERSIONS_ANNOTATION))
             != Some(&resource_versions_json)
         || !active_config_current;
     if !deployment_rollout_ready(&deployment) {
@@ -5594,7 +5633,7 @@ async fn reconcile_delegated_gateway(
             );
         }
         let patch = json!({
-            "metadata": {"annotations": {OWNED_MOUNTS_ANNOTATION: owned_json}},
+            "metadata": {"annotations": drop_legacy_annotation_aliases(&json!({OWNED_MOUNTS_ANNOTATION: owned_json}))},
             "spec": {"template": {"spec": pod_spec_patch}}
         });
         patch_delegated_deployment(
@@ -5694,15 +5733,9 @@ fn validate_deployment_delegation(
 ) -> Result<bool, OperatorError> {
     let annotations = deployment.metadata.annotations.as_ref();
     let owns = annotations.is_some_and(|annotations| {
-        annotations
-            .get(MOUNT_OPT_IN_ANNOTATION)
-            .is_some_and(|value| value == "enabled")
-            && annotations
-                .get(MOUNT_NETWORK_ANNOTATION)
-                .is_some_and(|value| value == network_name)
-            && annotations
-                .get(MOUNT_GATEWAY_ANNOTATION)
-                .is_some_and(|value| value == &gw_ref.name)
+        grid_annotation(annotations, MOUNT_OPT_IN_ANNOTATION).is_some_and(|value| value == "enabled")
+            && grid_annotation(annotations, MOUNT_NETWORK_ANNOTATION).is_some_and(|value| value == network_name)
+            && grid_annotation(annotations, MOUNT_GATEWAY_ANNOTATION).is_some_and(|value| value == &gw_ref.name)
     });
     if !owns {
         return Err(mount_failure(
@@ -5723,9 +5756,7 @@ fn validate_deployment_delegation(
         .ok_or_else(|| mount_failure("ContainerMissing", "the named Praxis container is absent"))?;
     validate_deployment_config_source(pod_spec, container, config_map_name)?;
     Ok(annotations.is_some_and(|annotations| {
-        annotations
-            .get(GRID_SERVING_TLS_ANNOTATION)
-            .is_some_and(|value| value == "chart-managed")
+        grid_annotation(annotations, GRID_SERVING_TLS_ANNOTATION).is_some_and(|value| value == "chart-managed")
     }))
 }
 
@@ -5863,7 +5894,7 @@ fn read_owned_mounts(deployment: &Deployment) -> Result<BTreeSet<String>, Operat
         .metadata
         .annotations
         .as_ref()
-        .and_then(|annotations| annotations.get(OWNED_MOUNTS_ANNOTATION))
+        .and_then(|annotations| grid_annotation(annotations, OWNED_MOUNTS_ANNOTATION))
     else {
         return Ok(BTreeSet::new());
     };
@@ -6519,6 +6550,15 @@ fn routable_tool_names(provider: &AgentToolProvider) -> Vec<String> {
         .collect()
 }
 
+/// Total routable tools and how many the cap leaves out.
+///
+/// Both values are derived from the same [`routable_tool_names`] call so they
+/// are always consistent. `cut` is zero when every tool fits.
+pub(crate) fn routable_tools_and_cut(provider: &AgentToolProvider) -> (usize, usize) {
+    let total = routable_tool_names(provider).len();
+    (total, total.saturating_sub(MAX_TOOLS_PER_PROVIDER))
+}
+
 /// Count each provider's tools the cap leaves out, dropping the series of providers gone from the list.
 pub(crate) fn record_tool_cuts(tool_providers: &[AgentToolProvider]) {
     crate::metrics::set_agent_tool_provider_tools_cut(tool_cuts(tool_providers));
@@ -6529,8 +6569,7 @@ pub(crate) fn tool_cuts(tool_providers: &[AgentToolProvider]) -> Vec<(String, St
     tool_providers
         .iter()
         .map(|provider| {
-            let total = routable_tool_names(provider).len();
-            let cut = total.saturating_sub(MAX_TOOLS_PER_PROVIDER);
+            let (total, cut) = routable_tools_and_cut(provider);
             if cut > 0 {
                 tracing::warn!(
                     provider = provider.metadata.name.as_deref().unwrap_or("?"),
@@ -15680,6 +15719,144 @@ mod tests {
         assert!(
             broadcast.provider_uids.is_empty(),
             "the complete UID is omitted rather than truncated"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // annotation domain: grid.praxis.fast vs grid.praxis-proxy.io alias
+    // -----------------------------------------------------------------------
+
+    fn with_legacy_annotation_domain(value: &mut Value, old: &str, new: &str) {
+        if let Some(annotations) = value.pointer_mut("/metadata/annotations") {
+            if let Some(obj) = annotations.as_object_mut() {
+                if let Some(v) = obj.remove(new) {
+                    obj.insert(old.to_owned(), v);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn annotation_keys_share_one_domain() {
+        let keys = [
+            MOUNT_OPT_IN_ANNOTATION,
+            MOUNT_NETWORK_ANNOTATION,
+            MOUNT_GATEWAY_ANNOTATION,
+            GRID_SERVING_TLS_ANNOTATION,
+            OWNED_MOUNTS_ANNOTATION,
+            CONFIG_REVISION_ANNOTATION,
+            SECRET_REVISION_ANNOTATION,
+            SECRET_RESOURCE_VERSIONS_ANNOTATION,
+        ];
+        for key in keys {
+            assert!(
+                key.starts_with(ANNOTATION_DOMAIN),
+                "annotation key {key:?} must use the {ANNOTATION_DOMAIN:?} domain"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_annotation_domain_is_read_as_an_alias() {
+        let annotations: BTreeMap<String, String> = [(
+            "grid.praxis-proxy.io/mount-reconciliation".to_owned(),
+            "enabled".to_owned(),
+        )]
+        .into();
+        let value = grid_annotation(&annotations, MOUNT_OPT_IN_ANNOTATION);
+        assert_eq!(
+            value.map(String::as_str),
+            Some("enabled"),
+            "legacy annotation must be readable via grid_annotation"
+        );
+    }
+
+    #[test]
+    fn delegated_deployment_with_legacy_annotations_still_validates() {
+        let mut fixture = delegated_config_source_fixture();
+        with_legacy_annotation_domain(
+            &mut fixture,
+            "grid.praxis-proxy.io/mount-reconciliation",
+            MOUNT_OPT_IN_ANNOTATION,
+        );
+        with_legacy_annotation_domain(
+            &mut fixture,
+            "grid.praxis-proxy.io/network",
+            MOUNT_NETWORK_ANNOTATION,
+        );
+        with_legacy_annotation_domain(
+            &mut fixture,
+            "grid.praxis-proxy.io/gateway",
+            MOUNT_GATEWAY_ANNOTATION,
+        );
+        let result = delegated_config_source_check(fixture);
+        assert!(
+            matches!(result, Ok(false)),
+            "deployment with only legacy annotation domain must still be accepted"
+        );
+    }
+
+    #[test]
+    fn owned_mounts_are_read_from_the_legacy_annotation() {
+        let names = vec!["grid-mount-ca".to_owned(), "grid-mount-config".to_owned()];
+        let expected: BTreeSet<String> = names.iter().cloned().collect();
+        let encoded = serde_json::to_string(&names).unwrap_or_else(|_| std::process::abort());
+        let deployment: Deployment = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "name": "gateway",
+                "annotations": {
+                    "grid.praxis-proxy.io/owned-mounts": encoded
+                }
+            },
+            "spec": {
+                "selector": {"matchLabels": {}},
+                "template": {"metadata": {}, "spec": {"containers": []}}
+            }
+        }))
+        .unwrap_or_else(|_| std::process::abort());
+        let result = read_owned_mounts(&deployment).unwrap_or_else(|_| std::process::abort());
+        assert_eq!(result, expected, "owned mounts must be readable from the legacy annotation domain");
+    }
+
+    #[test]
+    fn staged_patch_drops_the_legacy_annotation_aliases() {
+        let volumes: Vec<Value> = vec![];
+        let volume_mounts: &[Value] = &[];
+        let deployment_annotations = serde_json::json!({
+            (CONFIG_REVISION_ANNOTATION): "abc"
+        });
+        let template_annotations = serde_json::json!({});
+        let patch = staged_config_mount_patch(
+            volumes,
+            volume_mounts,
+            "config",
+            "praxis-consumer-config",
+            "praxis",
+            &deployment_annotations,
+            &template_annotations,
+        );
+        let annotations = patch
+            .pointer("/metadata/annotations")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| std::process::abort());
+        let non_null_legacy_keys: Vec<&str> = annotations
+            .iter()
+            .filter(|(k, v)| k.starts_with(LEGACY_ANNOTATION_DOMAIN) && !v.is_null())
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert!(
+            non_null_legacy_keys.is_empty(),
+            "staged patch must null out legacy annotation domain keys, not write values; found: {non_null_legacy_keys:?}"
+        );
+        let legacy_null_count = annotations
+            .iter()
+            .filter(|(k, v)| k.starts_with(LEGACY_ANNOTATION_DOMAIN) && v.is_null())
+            .count();
+        assert_eq!(
+            legacy_null_count, 1,
+            "staged patch must include one null entry per legacy alias to clear it"
         );
     }
 

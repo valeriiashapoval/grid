@@ -51,7 +51,7 @@ tests:
     template: templates/deployment.yaml
     asserts:
       - notExists:
-          path: metadata.annotations["grid.praxis-proxy.io/mount-reconciliation"]
+          path: metadata.annotations["grid.praxis.fast/mount-reconciliation"]
       - notExists:
           path: spec.template.spec.volumes[?(@.name == "tls")]
 
@@ -85,13 +85,13 @@ tests:
           mountPath: /run/secrets/monitoring-token
     asserts:
       - equal:
-          path: metadata.annotations["grid.praxis-proxy.io/mount-reconciliation"]
+          path: metadata.annotations["grid.praxis.fast/mount-reconciliation"]
           value: enabled
       - equal:
-          path: metadata.annotations["grid.praxis-proxy.io/network"]
+          path: metadata.annotations["grid.praxis.fast/network"]
           value: production
       - equal:
-          path: metadata.annotations["grid.praxis-proxy.io/gateway"]
+          path: metadata.annotations["grid.praxis.fast/gateway"]
           value: inference-gw
       - exists:
           path: spec.template.spec.volumes[?(@.name == "tls")]

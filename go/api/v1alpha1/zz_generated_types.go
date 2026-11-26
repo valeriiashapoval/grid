@@ -438,6 +438,8 @@ type AgentToolProviderSpec struct {
 // | Reason | Meaning | |--------|---------| | ProviderConfigInvalid | spec.endpoint or spec.gridNetworkRef is blank or whitespace-only. | | GridNetworkNotFound | The GridNetwork referenced by spec.gridNetworkRef does not exist. | | McpEndpointUnreachable | The MCP probe could not connect (transport failure, timeout, DNS error). | | McpToolsListInvalidResponse | The endpoint responded but the tools/list response was malformed. | | McpAuthRejected | The MCP server rejected the configured spec.auth credentials. | | McpAuthTokenInvalid | The resolved spec.auth bearer token contains characters that cannot be sent as an HTTP header value; the probe fails closed rather than proceeding unauthenticated. | | EndpointTlsSecretMissing | spec.tls's referenced Secret does not exist in the cluster. | | EndpointTlsKeyMissing | spec.tls's referenced Secret exists but is missing the expected key. | | EndpointTlsMaterialInvalid | spec.tls's certificate or key material could not be parsed. |
 // [InferenceProvider]: crate::crd::inference_provider::InferenceProvider
 type AgentToolProviderStatus struct {
+	// Observed conditions. ToolsCut says whether the routing cap of 128 tools per provider leaves some of the routable tools out.
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// Tools discovered via MCP tools/list.
 	DiscoveredTools []string `json:"discoveredTools,omitempty"`
 	// Sites matched by the site selector.
@@ -538,7 +540,7 @@ type GridNetworkConsumerGatewaysItemPraxisConfigDeriveTopology struct {
 }
 
 // GridNetworkConsumerGatewaysItemPraxisConfigMountReconciliation Opt in to validating Secret references and reconciling required mounts into a specifically delegated gateway Deployment.
-// Disabled by default. When enabled, the named Deployment must carry the grid.praxis-proxy.io/mount-reconciliation, .../network, and .../gateway annotations emitted by charts/praxis-gateway (or set them explicitly on an externally managed Deployment).
+// Disabled by default. When enabled, the named Deployment must carry the grid.praxis.fast/mount-reconciliation, .../network, and .../gateway annotations emitted by charts/praxis-gateway (or set them explicitly on an externally managed Deployment). The earlier grid.praxis-proxy.io keys are still read as an alias.
 type GridNetworkConsumerGatewaysItemPraxisConfigMountReconciliation struct {
 	// Name of the Praxis container whose mounts Grid manages.
 	ContainerName *string `json:"containerName,omitempty"`
@@ -608,7 +610,7 @@ type GridNetworkConsumerGatewaysItemPraxisConfig struct {
 	// Default: 8080.
 	ListenerPort *int64 `json:"listenerPort,omitempty"`
 	// Opt in to validating Secret references and reconciling required mounts into a specifically delegated gateway Deployment.
-	// Disabled by default. When enabled, the named Deployment must carry the grid.praxis-proxy.io/mount-reconciliation, .../network, and .../gateway annotations emitted by charts/praxis-gateway (or set them explicitly on an externally managed Deployment).
+	// Disabled by default. When enabled, the named Deployment must carry the grid.praxis.fast/mount-reconciliation, .../network, and .../gateway annotations emitted by charts/praxis-gateway (or set them explicitly on an externally managed Deployment). The earlier grid.praxis-proxy.io keys are still read as an alias.
 	MountReconciliation *GridNetworkConsumerGatewaysItemPraxisConfigMountReconciliation `json:"mountReconciliation,omitempty"`
 	// The filter that picks a candidate for each request.
 	// gridSiteRoute reads the serving config, so it needs the operator's poll signal transport. It also needs an enabled mountReconciliation, whose rollout per config revision re-reads the provider-hop backends, and an empty providerHopEndpoints, since hops follow clusterEndpoints. Every cluster is health-checked, so the gateway's readiness probe must ask Praxis /healthy: /ready fails while any one site is down.

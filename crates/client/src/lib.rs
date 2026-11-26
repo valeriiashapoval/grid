@@ -19,6 +19,19 @@ compile_error!("features `rcgen` and `fips` are mutually exclusive");
 #[cfg(all(feature = "reqwest-client", not(any(feature = "rcgen", feature = "fips"))))]
 compile_error!("`reqwest-client` needs one of `rcgen` or `fips` to pick a TLS backend");
 
+/// How often a gateway polls its local operator for signals, milliseconds.
+///
+/// In-cluster and unicast, so it is paced by how current the router needs its load to
+/// be rather than by what it costs. The poller's default, and the interval the operator
+/// renders into the gateway's serving config, so the two never differ.
+pub const GATEWAY_POLL_INTERVAL_MS: u64 = 1_000;
+
+/// A gateway's connect and request timeout to its local operator, milliseconds.
+///
+/// The poller's default, and the timeout the operator renders into the gateway's
+/// serving config.
+pub const GATEWAY_POLL_TIMEOUT_MS: u64 = 2_000;
+
 mod hop;
 #[cfg(feature = "peer-scraper")]
 mod mtls;

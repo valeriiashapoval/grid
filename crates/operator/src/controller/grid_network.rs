@@ -15727,12 +15727,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn with_legacy_annotation_domain(value: &mut Value, old: &str, new: &str) {
-        if let Some(annotations) = value.pointer_mut("/metadata/annotations") {
-            if let Some(obj) = annotations.as_object_mut() {
-                if let Some(v) = obj.remove(new) {
-                    obj.insert(old.to_owned(), v);
-                }
-            }
+        if let Some(annotations) = value.pointer_mut("/metadata/annotations")
+            && let Some(obj) = annotations.as_object_mut()
+            && let Some(v) = obj.remove(new)
+        {
+            obj.insert(old.to_owned(), v);
         }
     }
 
@@ -15758,16 +15757,30 @@ mod tests {
 
     #[test]
     fn legacy_annotation_domain_is_read_as_an_alias() {
-        let annotations: BTreeMap<String, String> = [(
+        let legacy_only: BTreeMap<String, String> = [(
             "grid.praxis-proxy.io/mount-reconciliation".to_owned(),
             "enabled".to_owned(),
         )]
         .into();
-        let value = grid_annotation(&annotations, MOUNT_OPT_IN_ANNOTATION);
         assert_eq!(
-            value.map(String::as_str),
+            grid_annotation(&legacy_only, MOUNT_OPT_IN_ANNOTATION).map(String::as_str),
             Some("enabled"),
             "legacy annotation must be readable via grid_annotation"
+        );
+        let both: BTreeMap<String, String> = [
+            ("grid.praxis-proxy.io/mount-reconciliation".to_owned(), "old".to_owned()),
+            (MOUNT_OPT_IN_ANNOTATION.to_owned(), "new".to_owned()),
+        ]
+        .into();
+        assert_eq!(
+            grid_annotation(&both, MOUNT_OPT_IN_ANNOTATION).map(String::as_str),
+            Some("new"),
+            "new domain wins when both keys are present"
+        );
+        assert_eq!(
+            grid_annotation(&BTreeMap::new(), MOUNT_OPT_IN_ANNOTATION),
+            None,
+            "absent key returns None"
         );
     }
 
@@ -15779,16 +15792,8 @@ mod tests {
             "grid.praxis-proxy.io/mount-reconciliation",
             MOUNT_OPT_IN_ANNOTATION,
         );
-        with_legacy_annotation_domain(
-            &mut fixture,
-            "grid.praxis-proxy.io/network",
-            MOUNT_NETWORK_ANNOTATION,
-        );
-        with_legacy_annotation_domain(
-            &mut fixture,
-            "grid.praxis-proxy.io/gateway",
-            MOUNT_GATEWAY_ANNOTATION,
-        );
+        with_legacy_annotation_domain(&mut fixture, "grid.praxis-proxy.io/network", MOUNT_NETWORK_ANNOTATION);
+        with_legacy_annotation_domain(&mut fixture, "grid.praxis-proxy.io/gateway", MOUNT_GATEWAY_ANNOTATION);
         let result = delegated_config_source_check(fixture);
         assert!(
             matches!(result, Ok(false)),
@@ -15817,46 +15822,53 @@ mod tests {
         }))
         .unwrap_or_else(|_| std::process::abort());
         let result = read_owned_mounts(&deployment).unwrap_or_else(|_| std::process::abort());
-        assert_eq!(result, expected, "owned mounts must be readable from the legacy annotation domain");
+        assert_eq!(
+            result, expected,
+            "owned mounts must be readable from the legacy annotation domain"
+        );
     }
 
     #[test]
     fn staged_patch_drops_the_legacy_annotation_aliases() {
         let volumes: Vec<Value> = vec![];
         let volume_mounts: &[Value] = &[];
-        let deployment_annotations = serde_json::json!({
-            (CONFIG_REVISION_ANNOTATION): "abc"
-        });
-        let template_annotations = serde_json::json!({});
         let patch = staged_config_mount_patch(
             volumes,
             volume_mounts,
             "config",
             "praxis-consumer-config",
             "praxis",
-            &deployment_annotations,
-            &template_annotations,
+            &json!({OWNED_MOUNTS_ANNOTATION: "[]"}),
+            &json!({CONFIG_REVISION_ANNOTATION: "config-2", "unrelated": "keep"}),
         );
-        let annotations = patch
-            .pointer("/metadata/annotations")
+        assert_eq!(
+            patch.pointer(&format!("/metadata/annotations/{}", OWNED_MOUNTS_ANNOTATION.replace('/', "~1"))),
+            Some(&json!("[]")),
+            "new-domain Deployment key is written"
+        );
+        assert_eq!(
+            patch.pointer("/metadata/annotations/grid.praxis-proxy.io~1owned-mounts"),
+            Some(&Value::Null),
+            "legacy Deployment key is nulled in the same write"
+        );
+        assert_eq!(
+            patch.pointer("/spec/template/metadata/annotations/grid.praxis-proxy.io~1config-revision"),
+            Some(&Value::Null),
+            "legacy Pod-template key is nulled in the same write"
+        );
+        assert_eq!(
+            patch.pointer("/spec/template/metadata/annotations/unrelated"),
+            Some(&json!("keep")),
+            "unrelated Pod-template key is preserved"
+        );
+        let template_annotations = patch
+            .pointer("/spec/template/metadata/annotations")
             .and_then(Value::as_object)
             .unwrap_or_else(|| std::process::abort());
-        let non_null_legacy_keys: Vec<&str> = annotations
-            .iter()
-            .filter(|(k, v)| k.starts_with(LEGACY_ANNOTATION_DOMAIN) && !v.is_null())
-            .map(|(k, _)| k.as_str())
-            .collect();
-        assert!(
-            non_null_legacy_keys.is_empty(),
-            "staged patch must null out legacy annotation domain keys, not write values; found: {non_null_legacy_keys:?}"
-        );
-        let legacy_null_count = annotations
-            .iter()
-            .filter(|(k, v)| k.starts_with(LEGACY_ANNOTATION_DOMAIN) && v.is_null())
-            .count();
         assert_eq!(
-            legacy_null_count, 1,
-            "staged patch must include one null entry per legacy alias to clear it"
+            template_annotations.len(),
+            3,
+            "template: new config-revision, its legacy null, and unrelated — no extra aliases"
         );
     }
 
